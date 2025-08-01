@@ -5,6 +5,8 @@ triggers:
     trigger: state
   - trigger: time
     at: "00:01:00"  # Recalculate cheapest hours daily at midnight
+  - entity_id: input_number.pump_daily_runtime_hours
+    trigger: state  # Recalculate when runtime hours setting changes
 actions:
   - variables:
       current_time: "{{ now().strftime('%H:%M') }}"
@@ -30,8 +32,8 @@ actions:
         {% endfor %}
         {{ prices }}
       
-      # Calculate cheapest hours (configurable between 6-8 hours)
-      pump_hours_target: 6  # Change this to 7 or 8 as needed
+      # Get target hours from input_number entity (configurable via UI)
+      pump_hours_target: "{{ states('input_number.pump_daily_runtime_hours') | int(6) }}"
       
       cheapest_hours: >-
         {% if todays_prices | length >= 18 %}
