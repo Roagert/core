@@ -1,5 +1,5 @@
 alias: Pool Pump Control - Dynamic Price Based
-description: Smart pump control that finds cheapest 6-8 hours automatically based on electricity prices
+description: Smart pump control that finds cheapest 6-8 hours automatically based on Strømligning electricity prices
 triggers:
   - entity_id: sensor.stromligning_current_price_vat
     trigger: state
@@ -11,51 +11,56 @@ actions:
       current_hour: "{{ now().hour }}"
       current_price: "{{ states('sensor.stromligning_current_price_vat') | float(0) }}"
       
-      # Get today's hourly prices (assuming you have a sensor with hourly data)
-      # This may need adjustment based on your specific price sensor format
+      # Get today's hourly prices from the prices attribute
+      price_data_raw: "{{ state_attr('sensor.stromligning_current_price_vat', 'prices') | default([]) }}"
+      
+      # Extract today's prices and convert to hour-price pairs
       todays_prices: >-
         {% set prices = [] %}
-        {% for hour in range(24) %}
-          {% set price_entity = 'sensor.stromligning_price_' ~ '%02d'|format(hour) %}
-          {% if states(price_entity) not in ['unknown', 'unavailable'] %}
-            {% set prices = prices + [{'hour': hour, 'price': states(price_entity) | float(0)}] %}
+        {% set today = now().date() %}
+        {% for price_entry in price_data_raw %}
+          {% if price_entry.start %}
+            {% set start_time = price_entry.start | as_datetime %}
+            {% if start_time and start_time.date() == today %}
+              {% set hour = start_time.hour %}
+              {% set price = price_entry.price | float(0) %}
+              {% set prices = prices + [{'hour': hour, 'price': price}] %}
+            {% endif %}
           {% endif %}
         {% endfor %}
         {{ prices }}
-      
-      # Alternative: If you have attribute data with hourly prices
-      todays_prices_alt: >-
-        {% set hourly_data = state_attr('sensor.stromligning_current_price_vat', 'hourly_prices') %}
-        {% if hourly_data %}
-          {% set prices = [] %}
-          {% for item in hourly_data %}
-            {% set prices = prices + [{'hour': item.hour, 'price': item.price | float(0)}] %}
-          {% endfor %}
-          {{ prices }}
-        {% else %}
-          []
-        {% endif %}
-      
-      # Use whichever price data source is available
-      price_data: >-
-        {% if todays_prices_alt | length > 0 %}
-          {{ todays_prices_alt }}
-        {% else %}
-          {{ todays_prices }}
-        {% endif %}
       
       # Calculate cheapest hours (configurable between 6-8 hours)
       pump_hours_target: 6  # Change this to 7 or 8 as needed
       
       cheapest_hours: >-
-        {% if price_data | length >= 24 %}
-          {% set sorted_prices = price_data | sort(attribute='price') %}
+        {% if todays_prices | length >= 18 %}
+          {% set sorted_prices = todays_prices | sort(attribute='price') %}
           {% set cheapest = sorted_prices[:pump_hours_target] %}
           {{ cheapest | map(attribute='hour') | list | sort }}
         {% else %}
-          # Fallback to current time if no price data available
+          # Fallback: use current logic if insufficient data
           [{{ current_hour }}]
         {% endif %}
+      
+      # Find the cheapest and most expensive prices for context
+      cheapest_price: >-
+        {% if todays_prices | length > 0 %}
+          {{ (todays_prices | sort(attribute='price') | first).price | round(3) }}
+        {% else %}
+          {{ current_price }}
+        {% endif %}
+      
+      most_expensive_price: >-
+        {% if todays_prices | length > 0 %}
+          {{ (todays_prices | sort(attribute='price', reverse=true) | first).price | round(3) }}
+        {% else %}
+          {{ current_price }}
+        {% endif %}
+      
+      # Calculate potential savings
+      price_savings: >-
+        {{ ((most_expensive_price | float(0)) - (cheapest_price | float(0))) | round(3) }}
       
       # Check if current hour is in cheapest hours
       is_cheap_hour: "{{ current_hour in cheapest_hours }}"
@@ -63,21 +68,17 @@ actions:
       # Calculate next pump event
       next_pump_event: >-
         {% if is_cheap_hour %}
-          {% set next_off_hours = cheapest_hours | reject('<=', current_hour) | list %}
-          {% if next_off_hours | length > 0 %}
-            {{ next_off_hours | first + 1 }}
+          {% set remaining_cheap_hours = cheapest_hours | reject('<=', current_hour) | list %}
+          {% if remaining_cheap_hours | length > 0 %}
+            {{ remaining_cheap_hours | first + 1 }}
           {% else %}
-            {% set tomorrow_cheap = cheapest_hours | reject('<=', current_hour) | list %}
-            {% if tomorrow_cheap | length > 0 %}
-              {{ tomorrow_cheap | first + 24 }}
-            {% else %}
-              {{ cheapest_hours | first + 24 }}
-            {% endif %}
+            {% set tomorrow_first_cheap = cheapest_hours | first + 24 %}
+            {{ tomorrow_first_cheap }}
           {% endif %}
         {% else %}
-          {% set next_on_hours = cheapest_hours | reject('<=', current_hour) | list %}
-          {% if next_on_hours | length > 0 %}
-            {{ next_on_hours | first }}
+          {% set upcoming_cheap_hours = cheapest_hours | reject('<=', current_hour) | list %}
+          {% if upcoming_cheap_hours | length > 0 %}
+            {{ upcoming_cheap_hours | first }}
           {% else %}
             {{ cheapest_hours | first + 24 }}
           {% endif %}
@@ -89,20 +90,37 @@ actions:
         {% else %}
           {{ '%02d:00 tomorrow'|format(next_pump_event - 24) }}
         {% endif %}
+      
+      # Generate summary of all today's prices for debugging
+      price_summary: >-
+        {% set summary = [] %}
+        {% for price in todays_prices | sort(attribute='hour') %}
+          {% set marker = '💰' if price.hour in cheapest_hours else '💸' if price.price >= most_expensive_price else '⚡' %}
+          {% set summary = summary + ['%02d:00 %s %.3f kr/kWh'|format(price.hour, marker, price.price)] %}
+        {% endfor %}
+        {{ summary | join('\n') }}
 
   # Update status message
   - target:
       entity_id: input_text.pump_alert_message
     data:
       value: >-
-        {{ current_time }}: Smart pump schedule analysis
-        Current hour: {{ current_hour }} | Price: {{ current_price }} DKK/kWh
+        {{ current_time }}: Smart Pool Pump Analysis 🏊‍♀️
         
-        Today's cheapest {{ pump_hours_target }} hours: {{ cheapest_hours | join(', ') }}
-        Current hour is {% if is_cheap_hour %}IN{% else %}NOT IN{% endif %} cheapest periods
+        📊 Current Status:
+        • Hour: {{ current_hour }} | Price: {{ current_price }} kr/kWh
+        • Status: {% if is_cheap_hour %}🟢 OPTIMAL PERIOD{% else %}🔴 EXPENSIVE PERIOD{% endif %}
         
-        {% if price_data | length < 24 %}
-        ⚠️ Limited price data available ({{ price_data | length }}/24 hours)
+        💰 Today's Strategy:
+        • Target: {{ pump_hours_target }} cheapest hours
+        • Cheapest hours: {{ cheapest_hours | join(', ') }}
+        • Price range: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
+        • Potential savings: {{ price_savings }} kr/kWh
+        
+        ⏰ Next Event: {{ 'OFF' if is_cheap_hour else 'ON' }} at {{ next_event_time }}
+        
+        {% if todays_prices | length < 18 %}
+        ⚠️ Limited price data: {{ todays_prices | length }}/24 hours available
         {% endif %}
     action: input_text.set_value
 
@@ -121,25 +139,32 @@ actions:
               entity_id: input_text.pump_alert_message
             data:
               value: >-
-                {{ current_time }}: ✓ PUMP ON - Optimal pricing period
-                Current hour: {{ current_hour }} (cheapest {{ pump_hours_target }} hours)
-                Price: {{ current_price }} DKK/kWh
+                {{ current_time }}: ✅ PUMP RUNNING - Optimal Period
                 
-                Today's cheapest hours: {{ cheapest_hours | join(', ') }}
-                Next OFF at: {{ next_event_time }}
+                💰 Smart Savings Active:
+                • Current: {{ current_price }} kr/kWh
+                • Today's cheapest: {{ cheapest_price }} kr/kWh  
+                • Saving vs peak: {{ price_savings }} kr/kWh
                 
-                💰 Running during {{ pump_hours_target }}-hour optimal window
-            action: input_text.set_value
-          - data:
-              title: "🏊 Pool Pump Started"
-              message: >-
-                Pool pump turned ON at {{ current_time }}
-                Running during optimal electricity pricing period
-                
-                • Current price: {{ current_price }} DKK/kWh
-                • Hour {{ current_hour }} is in cheapest {{ pump_hours_target }} hours today
+                ⏰ Schedule:
+                • Running {{ pump_hours_target }} hours total today
                 • Cheapest hours: {{ cheapest_hours | join(', ') }}
                 • Next OFF: {{ next_event_time }}
+                
+                🎯 Hour {{ current_hour }} is optimal for pool pump operation
+            action: input_text.set_value
+          - data:
+              title: "🏊 Pool Pump ON - Smart Schedule"
+              message: >-
+                💰 Running during optimal electricity pricing
+                
+                Current: {{ current_price }} kr/kWh
+                Today's range: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
+                
+                Optimal hours today: {{ cheapest_hours | join(', ') }}
+                Next scheduled OFF: {{ next_event_time }}
+                
+                Saving {{ price_savings }} kr/kWh vs peak rates! 💚
             action: persistent_notification.create
     
     # Turn pump OFF during expensive hours
@@ -152,25 +177,46 @@ actions:
           entity_id: input_text.pump_alert_message
         data:
           value: >-
-            {{ current_time }}: ✗ PUMP OFF - Expensive period
-            Current hour: {{ current_hour }} (not in cheapest {{ pump_hours_target }} hours)
-            Price: {{ current_price }} DKK/kWh
+            {{ current_time }}: ⏸️ PUMP OFF - Expensive Period
             
-            Today's cheapest hours: {{ cheapest_hours | join(', ') }}
-            Next ON at: {{ next_event_time }}
+            💸 Avoiding High Costs:
+            • Current: {{ current_price }} kr/kWh
+            • Today's cheapest: {{ cheapest_price }} kr/kWh
+            • Avoiding: {{ (current_price | float(0) - cheapest_price | float(0)) | round(3) }} kr/kWh extra cost
             
-            💸 Avoiding expensive electricity period
+            ⏰ Smart Schedule:
+            • Target: {{ pump_hours_target }} cheapest hours daily
+            • Optimal hours: {{ cheapest_hours | join(', ') }}
+            • Next ON: {{ next_event_time }}
+            
+            🎯 Waiting for better electricity prices
         action: input_text.set_value
       - data:
-          title: "🏊 Pool Pump Stopped"
+          title: "🏊 Pool Pump OFF - Smart Schedule"
           message: >-
-            Pool pump turned OFF at {{ current_time }}
-            Outside optimal electricity pricing period
+            💸 Avoiding expensive electricity period
             
-            • Current price: {{ current_price }} DKK/kWh
-            • Daily target: {{ pump_hours_target }} cheapest hours
-            • Cheapest hours today: {{ cheapest_hours | join(', ') }}
-            • Next ON: {{ next_event_time }}
+            Current: {{ current_price }} kr/kWh
+            Today's cheapest: {{ cheapest_price }} kr/kWh
+            
+            Optimal hours: {{ cheapest_hours | join(', ') }}
+            Next scheduled ON: {{ next_event_time }}
+            
+            Smart scheduling saves money! 💚
         action: persistent_notification.create
+
+  # Optional: Create a detailed price analysis helper (for debugging)
+  - target:
+      entity_id: input_text.price_analysis
+    data:
+      value: >-
+        📊 Today's Electricity Prices ({{ todays_prices | length }}/24 hours):
+        
+        {{ price_summary }}
+        
+        🎯 Strategy: Run pump during {{ pump_hours_target }} cheapest hours
+        💰 Total potential daily savings: {{ price_savings }} kr/kWh × pump_hours
+    action: input_text.set_value
+    continue_on_error: true  # Don't fail if this helper entity doesn't exist
 
 mode: single
