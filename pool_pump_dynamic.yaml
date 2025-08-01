@@ -107,22 +107,17 @@ actions:
       entity_id: input_text.pump_alert_message
     data:
       value: >-
-        {{ current_time }}: Smart Pool Pump Analysis 🏊‍♀️
+        {{ current_time }}: Pool pump analysis
+        Current hour: {{ current_hour }}, Price: {{ current_price }} kr/kWh
+        Status: {% if is_cheap_hour %}Running - cheap period{% else %}Off - expensive period{% endif %}
         
-        📊 Current Status:
-        • Hour: {{ current_hour }} | Price: {{ current_price }} kr/kWh
-        • Status: {% if is_cheap_hour %}🟢 OPTIMAL PERIOD{% else %}🔴 EXPENSIVE PERIOD{% endif %}
-        
-        💰 Today's Strategy:
-        • Target: {{ pump_hours_target }} cheapest hours
-        • Cheapest hours: {{ cheapest_hours | join(', ') }}
-        • Price range: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
-        • Potential savings: {{ price_savings }} kr/kWh
-        
-        ⏰ Next Event: {{ 'OFF' if is_cheap_hour else 'ON' }} at {{ next_event_time }}
+        Target: {{ pump_hours_target }} cheapest hours today
+        Cheapest hours: {{ cheapest_hours | join(', ') }}
+        Price range: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
+        Next event: {{ 'OFF' if is_cheap_hour else 'ON' }} at {{ next_event_time }}
         
         {% if todays_prices | length < 18 %}
-        ⚠️ Limited price data: {{ todays_prices | length }}/24 hours available
+        Warning: Limited price data ({{ todays_prices | length }}/24 hours)
         {% endif %}
     action: input_text.set_value
 
@@ -141,32 +136,24 @@ actions:
               entity_id: input_text.pump_alert_message
             data:
               value: >-
-                {{ current_time }}: ✅ PUMP RUNNING - Optimal Period
+                {{ current_time }}: Pump ON - cheap period
+                Current: {{ current_price }} kr/kWh
+                Cheapest today: {{ cheapest_price }} kr/kWh
+                Saving: {{ price_savings }} kr/kWh vs peak
                 
-                💰 Smart Savings Active:
-                • Current: {{ current_price }} kr/kWh
-                • Today's cheapest: {{ cheapest_price }} kr/kWh  
-                • Saving vs peak: {{ price_savings }} kr/kWh
-                
-                ⏰ Schedule:
-                • Running {{ pump_hours_target }} hours total today
-                • Cheapest hours: {{ cheapest_hours | join(', ') }}
-                • Next OFF: {{ next_event_time }}
-                
-                🎯 Hour {{ current_hour }} is optimal for pool pump operation
+                Running {{ pump_hours_target }} hours today
+                Cheapest hours: {{ cheapest_hours | join(', ') }}
+                Next OFF: {{ next_event_time }}
             action: input_text.set_value
           - data:
-              title: "🏊 Pool Pump ON - Smart Schedule"
+              title: "Pool Pump Started"
               message: >-
-                💰 Running during optimal electricity pricing
-                
+                Running during cheap electricity period
                 Current: {{ current_price }} kr/kWh
-                Today's range: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
-                
-                Optimal hours today: {{ cheapest_hours | join(', ') }}
-                Next scheduled OFF: {{ next_event_time }}
-                
-                Saving {{ price_savings }} kr/kWh vs peak rates! 💚
+                Range today: {{ cheapest_price }} - {{ most_expensive_price }} kr/kWh
+                Cheap hours: {{ cheapest_hours | join(', ') }}
+                Next OFF: {{ next_event_time }}
+                Saving {{ price_savings }} kr/kWh vs peak
             action: persistent_notification.create
     
     # Turn pump OFF during expensive hours
@@ -179,32 +166,23 @@ actions:
           entity_id: input_text.pump_alert_message
         data:
           value: >-
-            {{ current_time }}: ⏸️ PUMP OFF - Expensive Period
+            {{ current_time }}: Pump OFF - expensive period
+            Current: {{ current_price }} kr/kWh
+            Cheapest today: {{ cheapest_price }} kr/kWh
+            Avoiding: {{ (current_price | float(0) - cheapest_price | float(0)) | round(3) }} kr/kWh extra cost
             
-            💸 Avoiding High Costs:
-            • Current: {{ current_price }} kr/kWh
-            • Today's cheapest: {{ cheapest_price }} kr/kWh
-            • Avoiding: {{ (current_price | float(0) - cheapest_price | float(0)) | round(3) }} kr/kWh extra cost
-            
-            ⏰ Smart Schedule:
-            • Target: {{ pump_hours_target }} cheapest hours daily
-            • Optimal hours: {{ cheapest_hours | join(', ') }}
-            • Next ON: {{ next_event_time }}
-            
-            🎯 Waiting for better electricity prices
+            Target: {{ pump_hours_target }} cheapest hours daily
+            Cheap hours: {{ cheapest_hours | join(', ') }}
+            Next ON: {{ next_event_time }}
         action: input_text.set_value
       - data:
-          title: "🏊 Pool Pump OFF - Smart Schedule"
+          title: "Pool Pump Stopped"
           message: >-
-            💸 Avoiding expensive electricity period
-            
+            Avoiding expensive electricity period
             Current: {{ current_price }} kr/kWh
-            Today's cheapest: {{ cheapest_price }} kr/kWh
-            
-            Optimal hours: {{ cheapest_hours | join(', ') }}
-            Next scheduled ON: {{ next_event_time }}
-            
-            Smart scheduling saves money! 💚
+            Cheapest today: {{ cheapest_price }} kr/kWh
+            Cheap hours: {{ cheapest_hours | join(', ') }}
+            Next ON: {{ next_event_time }}
         action: persistent_notification.create
 
   # Optional: Create a detailed price analysis helper (for debugging)
@@ -212,12 +190,12 @@ actions:
       entity_id: input_text.price_analysis
     data:
       value: >-
-        📊 Today's Electricity Prices ({{ todays_prices | length }}/24 hours):
+        Today's Electricity Prices ({{ todays_prices | length }}/24 hours):
         
         {{ price_summary }}
         
-        🎯 Strategy: Run pump during {{ pump_hours_target }} cheapest hours
-        💰 Total potential daily savings: {{ price_savings }} kr/kWh × pump_hours
+        Strategy: Run pump during {{ pump_hours_target }} cheapest hours
+        Potential daily savings: {{ price_savings }} kr/kWh per hour
     action: input_text.set_value
     continue_on_error: true  # Don't fail if this helper entity doesn't exist
 
