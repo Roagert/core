@@ -9,8 +9,9 @@ triggers:
     trigger: state  # Recalculate when runtime hours setting changes
 actions:
   - variables:
+      # Basic time and price variables
       current_time: "{{ now().strftime('%H:%M') }}"
-      current_hour: "{{ now().hour }}"
+      current_hour: "{{ now().hour | int }}"
       current_price: "{{ states('sensor.stromligning_current_price_vat') | float(0) }}"
       
       # Get today's hourly prices from the prices attribute
@@ -24,7 +25,7 @@ actions:
           {% if price_entry.start %}
             {% set start_time = price_entry.start | as_datetime %}
             {% if start_time and start_time.date() == today %}
-              {% set hour = start_time.hour %}
+              {% set hour = start_time.hour | int %}
               {% set price = price_entry.price | float(0) %}
               {% set prices = prices + [{'hour': hour, 'price': price}] %}
             {% endif %}
@@ -35,70 +36,88 @@ actions:
       # Get target hours from input_number entity (configurable via UI)
       pump_hours_target: "{{ states('input_number.pump_daily_runtime_hours') | int(6) }}"
       
+      # Calculate cheapest hours ensuring they are integers
       cheapest_hours: >-
         {% if todays_prices | length >= 18 %}
           {% set sorted_prices = todays_prices | sort(attribute='price') %}
-          {% set cheapest = sorted_prices[:pump_hours_target] %}
-          {{ cheapest | map(attribute='hour') | list | sort }}
+          {% set cheapest = sorted_prices[:pump_hours_target | int] %}
+          {% set hour_list = [] %}
+          {% for item in cheapest %}
+            {% set hour_list = hour_list + [item.hour | int] %}
+          {% endfor %}
+          {{ hour_list | sort }}
         {% else %}
-          # Fallback: use current logic if insufficient data
-          [{{ current_hour }}]
+          # Fallback: use current hour if insufficient data
+          [{{ current_hour | int }}]
         {% endif %}
       
       # Find the cheapest and most expensive prices for context
       cheapest_price: >-
         {% if todays_prices | length > 0 %}
-          {{ (todays_prices | sort(attribute='price') | first).price | round(3) }}
+          {{ (todays_prices | sort(attribute='price') | first).price | float | round(3) }}
         {% else %}
-          {{ current_price }}
+          {{ current_price | float }}
         {% endif %}
       
       most_expensive_price: >-
         {% if todays_prices | length > 0 %}
-          {{ (todays_prices | sort(attribute='price', reverse=true) | first).price | round(3) }}
+          {{ (todays_prices | sort(attribute='price', reverse=true) | first).price | float | round(3) }}
         {% else %}
-          {{ current_price }}
+          {{ current_price | float }}
         {% endif %}
       
       # Calculate potential savings
       price_savings: >-
         {{ ((most_expensive_price | float(0)) - (cheapest_price | float(0))) | round(3) }}
       
-      # Check if current hour is in cheapest hours
-      is_cheap_hour: "{{ current_hour in cheapest_hours }}"
+      # Check if current hour is in cheapest hours (ensure both are integers)
+      is_cheap_hour: "{{ (current_hour | int) in (cheapest_hours | list) }}"
       
       # Calculate next pump event
       next_pump_event: >-
-        {% if is_cheap_hour %}
-          {% set remaining_cheap_hours = cheapest_hours | reject('<=', current_hour) | list %}
+        {% set current_h = current_hour | int %}
+        {% set cheap_h = cheapest_hours | list %}
+        {% if (current_h in cheap_h) %}
+          {% set remaining_cheap_hours = cheap_h | reject('<=', current_h) | list %}
           {% if remaining_cheap_hours | length > 0 %}
-            {{ remaining_cheap_hours | first + 1 }}
+            {{ (remaining_cheap_hours | first | int) + 1 }}
           {% else %}
-            {% set tomorrow_first_cheap = cheapest_hours | first + 24 %}
-            {{ tomorrow_first_cheap }}
+            {{ (cheap_h | first | int) + 24 }}
           {% endif %}
         {% else %}
-          {% set upcoming_cheap_hours = cheapest_hours | reject('<=', current_hour) | list %}
+          {% set upcoming_cheap_hours = cheap_h | reject('<=', current_h) | list %}
           {% if upcoming_cheap_hours | length > 0 %}
-            {{ upcoming_cheap_hours | first }}
+            {{ upcoming_cheap_hours | first | int }}
           {% else %}
-            {{ cheapest_hours | first + 24 }}
+            {{ (cheap_h | first | int) + 24 }}
           {% endif %}
         {% endif %}
       
+      # Format next event time
       next_event_time: >-
-        {% if next_pump_event < 24 %}
-          {{ '%02d:00'|format(next_pump_event) }}
+        {% set next_event = next_pump_event | int %}
+        {% if next_event < 24 %}
+          {{ '%02d:00' | format(next_event) }}
         {% else %}
-          {{ '%02d:00 tomorrow'|format(next_pump_event - 24) }}
+          {{ '%02d:00 tomorrow' | format(next_event - 24) }}
         {% endif %}
       
       # Generate summary of all today's prices for debugging
       price_summary: >-
         {% set summary = [] %}
+        {% set cheap_h = cheapest_hours | list %}
+        {% set max_price = most_expensive_price | float %}
         {% for price in todays_prices | sort(attribute='hour') %}
-          {% set marker = '💰' if price.hour in cheapest_hours else '💸' if price.price >= most_expensive_price else '⚡' %}
-          {% set summary = summary + ['%02d:00 %s %.3f kr/kWh'|format(price.hour, marker, price.price)] %}
+          {% set hour = price.hour | int %}
+          {% set price_val = price.price | float %}
+          {% if hour in cheap_h %}
+            {% set marker = 'CHEAP' %}
+          {% elif price_val >= max_price %}
+            {% set marker = 'PEAK' %}
+          {% else %}
+            {% set marker = 'MID' %}
+          {% endif %}
+          {% set summary = summary + ['%02d:00 %s %.3f kr/kWh' | format(hour, marker, price_val)] %}
         {% endfor %}
         {{ summary | join('\n') }}
 
